@@ -68,6 +68,8 @@ jobs:
           # trigger an interactive unlock.
           security set-key-partition-list -S apple-tool:,apple:,codesign: \
               -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH" >/dev/null
+          # One argument per existing keychain: the word splitting is intended.
+          # shellcheck disable=SC2046
           security list-keychain -d user -s "$KEYCHAIN_PATH" $(security list-keychains -d user | tr -d '"')
 
       # The identity name is public and lives in bundle/release-config.sh.
