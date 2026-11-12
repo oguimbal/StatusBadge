@@ -85,7 +85,9 @@ fn main() -> anyhow::Result<()> {
             },
         )
         .init();
-    let demo = std::env::args().any(|arg| arg == "--demo");
+    // `--demo-single`: the demo reduced to one production sudo, which takes the centre.
+    let demo_single = std::env::args().any(|arg| arg == "--demo-single");
+    let demo = demo_single || std::env::args().any(|arg| arg == "--demo");
     let _instance = if demo {
         None
     } else {
@@ -93,7 +95,7 @@ fn main() -> anyhow::Result<()> {
     };
     let config = if demo {
         Config {
-            targets: demo_targets(),
+            targets: demo_targets(demo_single),
             ..Default::default()
         }
     } else {
@@ -171,7 +173,7 @@ fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-fn demo_targets() -> Vec<Target> {
+fn demo_targets(single: bool) -> Vec<Target> {
     let target = |name: &str, environment| Target {
         id: format!("demo-{name}-{environment:?}").to_lowercase(),
         base: format!("https://sudo.{}.test", name.to_lowercase()),
@@ -189,6 +191,10 @@ fn demo_targets() -> Vec<Target> {
         target("Boreal", TargetEnvironment::Production),
         target("Boreal", TargetEnvironment::Development),
     ];
+    if single {
+        targets
+            .retain(|t| t.name == "Delta" || t.name == "Boreal" && !t.environment.is_production());
+    }
     sort_targets(&mut targets);
     targets
 }

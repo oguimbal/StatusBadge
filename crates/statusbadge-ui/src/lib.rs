@@ -31,6 +31,20 @@ pub struct Satellite {
     /// Unit vector from the badge centre: the label sits on the visible side.
     pub outward: (f32, f32),
     pub ear: bool,
+    /// This sudo is the centre circle itself (see `centre_item`).
+    pub centre: bool,
+}
+
+/// Index of the sudo drawn as the centre circle: the only production sudo or, without
+/// any production sudo, the only sudo. The centre has nothing to combine then, and a
+/// bulb beside it would show the same status twice.
+pub fn centre_item(items: &[(&str, bool)]) -> Option<usize> {
+    let mut productions = (0..items.len()).filter(|&i| items[i].1);
+    match (productions.next(), productions.next()) {
+        (Some(only), None) => Some(only),
+        (None, _) if items.len() == 1 => Some(0),
+        _ => None,
+    }
 }
 
 pub fn center_placement() -> Placement {
@@ -55,6 +69,9 @@ fn overlap(a: Placement, b: Placement) -> bool {
 /// sharing the circle evenly from the bottom-right, clockwise. Other environments with a
 /// production sibling are ears on that bulb. Every shape shrinks together until no two
 /// projects touch and everything fits in the window.
+///
+/// The sudo chosen by `centre_item` takes the centre's placement instead of a bulb; its
+/// other environments are ears of the centre and share the circle with the bulbs.
 pub fn satellites(items: &[(&str, bool)]) -> Vec<Satellite> {
     let parent = |index: usize| {
         let (project, production) = items[index];
@@ -67,34 +84,45 @@ pub fn satellites(items: &[(&str, bool)]) -> Vec<Satellite> {
             .flatten()
     };
     let group: Vec<usize> = (0..items.len()).map(|i| parent(i).unwrap_or(i)).collect();
-    let slots: Vec<usize> = (0..items.len()).filter(|&i| group[i] == i).collect();
-    if slots.is_empty() {
-        return Vec::new();
-    }
-    let step = std::f32::consts::TAU / slots.len() as f32;
+    let centre = centre_item(items);
+    let centre_ear = |i: usize| Some(i) != centre && Some(group[i]) == centre;
+    let slots: Vec<usize> = (0..items.len())
+        .filter(|&i| Some(i) != centre && (group[i] == i || centre_ear(i)))
+        .collect();
+    let step = std::f32::consts::TAU / slots.len().max(1) as f32;
     let c = BADGE_SIZE / 2.0;
     let place = |scale: f32| {
         let mut shapes = vec![((0.0f32, 0.0f32, 0.0f32), (0.0f32, 0.0f32), false); items.len()];
+        if let Some(i) = centre {
+            shapes[i] = ((c, c, CENTER_DIAMETER), (0.0, 0.0), false);
+        }
         for (slot, &i) in slots.iter().enumerate() {
             let angle = std::f32::consts::FRAC_PI_4 + step * slot as f32;
-            let diameter = scale
-                * if items[i].1 {
-                    BULB_DIAMETER
-                } else {
-                    LONE_DIAMETER
-                };
-            let distance = CENTER_DIAMETER / 2.0 + BULB_OFFSET * diameter / 2.0;
             let outward = (angle.cos(), angle.sin());
+            let (diameter, distance) = if centre_ear(i) {
+                (scale * EAR_DIAMETER, EAR_DISTANCE * CENTER_DIAMETER / 2.0)
+            } else {
+                let diameter = scale
+                    * if items[i].1 {
+                        BULB_DIAMETER
+                    } else {
+                        LONE_DIAMETER
+                    };
+                (
+                    diameter,
+                    CENTER_DIAMETER / 2.0 + BULB_OFFSET * diameter / 2.0,
+                )
+            };
             shapes[i] = (
                 (c + distance * outward.0, c + distance * outward.1, diameter),
                 outward,
-                false,
+                centre_ear(i),
             );
         }
         let mut ears = vec![0usize; items.len()];
         for i in 0..items.len() {
             let owner = group[i];
-            if owner == i {
+            if owner == i || Some(owner) == centre {
                 continue;
             }
             let ((bx, by, bd), outward, _) = shapes[owner];
@@ -117,24 +145,30 @@ pub fn satellites(items: &[(&str, bool)]) -> Vec<Satellite> {
         }
         shapes
             .into_iter()
-            .map(|((x, y, d), outward, ear)| Satellite {
+            .enumerate()
+            .map(|(i, ((x, y, d), outward, ear))| Satellite {
                 placement: (x - d / 2.0, y - d / 2.0, d),
                 outward,
                 ear,
+                centre: Some(i) == centre,
             })
             .collect::<Vec<_>>()
     };
     let fits = |shapes: &[Satellite]| {
         shapes.iter().enumerate().all(|(i, s)| {
             let p = s.placement;
-            p.0 >= WINDOW_MARGIN
-                && p.1 >= WINDOW_MARGIN
-                && p.0 + p.2 <= BADGE_SIZE - WINDOW_MARGIN
-                && p.1 + p.2 <= BADGE_SIZE - WINDOW_MARGIN
-                && shapes[..i].iter().enumerate().all(|(j, q)| {
-                    // Shapes of one project merge by design; two ears of one bulb do not.
-                    (group[i] == group[j] && !(s.ear && q.ear)) || !overlap(p, q.placement)
-                })
+            // Every bulb and ear merges with the centre by design.
+            s.centre
+                || p.0 >= WINDOW_MARGIN
+                    && p.1 >= WINDOW_MARGIN
+                    && p.0 + p.2 <= BADGE_SIZE - WINDOW_MARGIN
+                    && p.1 + p.2 <= BADGE_SIZE - WINDOW_MARGIN
+                    && shapes[..i].iter().enumerate().all(|(j, q)| {
+                        // Shapes of one project merge by design; two ears of one bulb do not.
+                        q.centre
+                            || (group[i] == group[j] && !(s.ear && q.ear))
+                            || !overlap(p, q.placement)
+                    })
         })
     };
     let mut scale = 1.0;
@@ -186,6 +220,16 @@ impl Model {
     }
     pub fn combined(&self) -> Option<(Status, u64)> {
         combined(self.targets.iter().map(|(t, s)| (t, s)), self.now_ms)
+    }
+    fn items(&self) -> Vec<(&str, bool)> {
+        self.targets
+            .iter()
+            .map(|(t, _)| (t.name.as_str(), t.environment.is_production()))
+            .collect()
+    }
+    /// The sudo shown by the centre circle itself, if any (see `centre_item`).
+    pub fn centre_target(&self) -> Option<&(Target, TargetState)> {
+        centre_item(&self.items()).map(|i| &self.targets[i])
     }
     /// Unlocked target with the most severe status, opened by a click on the centre.
     pub fn worst(&self) -> Option<&Target> {
@@ -409,15 +453,11 @@ impl StatusView {
     }
     fn badge(&self, cx: &mut Context<Self>) -> AnyElement {
         let now = self.model.now_ms;
-        let items: Vec<(&str, bool)> = self
-            .model
-            .targets
-            .iter()
-            .map(|(t, _)| (t.name.as_str(), t.environment.is_production()))
-            .collect();
-        let shapes = satellites(&items);
+        let shapes = satellites(&self.model.items());
         let center = center_placement();
-        let combined = self.model.combined();
+        // With a sudo as the centre, its own halo below replaces the combined one.
+        let sole = self.model.centre_target();
+        let combined = self.model.combined().filter(|_| sole.is_none());
         let mut root = div()
             .id("statusbadge")
             .relative()
@@ -438,7 +478,7 @@ impl StatusView {
         // Ears under bulbs, bulbs under the centre: each shows only its outer part.
         for ears in [true, false] {
             for ((target, state), shape) in self.model.targets.iter().zip(&shapes) {
-                if shape.ear != ears {
+                if shape.ear != ears || shape.centre {
                     continue;
                 }
                 let (status, count) = state.indicator(now);
@@ -460,8 +500,22 @@ impl StatusView {
                 ));
             }
         }
-        root = match combined {
-            Some((status, count)) => root.child(self.circle(
+        root = match (sole, combined) {
+            // The centre is this sudo: its status, count, padlock, details and click.
+            (Some((target, state)), _) => {
+                let (status, count) = state.indicator(now);
+                root.child(self.circle(
+                    "center".into(),
+                    Cell::Target(target.id.clone()),
+                    center,
+                    (!state.requires_login()).then(|| self.fill(status)),
+                    count,
+                    (0.0, 0.0),
+                    false,
+                    cx,
+                ))
+            }
+            (None, Some((status, count))) => root.child(self.circle(
                 "center".into(),
                 Cell::Center,
                 center,
@@ -471,7 +525,7 @@ impl StatusView {
                 false,
                 cx,
             )),
-            None => root.child(self.empty_center(center, cx)),
+            (None, None) => root.child(self.empty_center(center, cx)),
         };
         if !matches!(self.model.update, UpdateState::Idle) {
             root = root.child(self.update_button(cx));
@@ -934,8 +988,18 @@ mod tests {
                 }
                 let shapes = satellites(&items);
                 assert_eq!(shapes.len(), items.len());
+                let productions = items.iter().filter(|(_, production)| *production).count();
+                assert_eq!(
+                    shapes.iter().filter(|s| s.centre).count(),
+                    usize::from(productions == 1 || items.len() == 1),
+                    "{n} {pattern}"
+                );
                 for (i, s) in shapes.iter().enumerate() {
                     let p = s.placement;
+                    if s.centre {
+                        assert_eq!(p, center_placement());
+                        continue;
+                    }
                     assert!(
                         p.0 >= WINDOW_MARGIN && p.1 >= WINDOW_MARGIN,
                         "{n} {i} {p:?}"
@@ -943,6 +1007,9 @@ mod tests {
                     assert!(p.0 + p.2 <= BADGE_SIZE - WINDOW_MARGIN);
                     assert!(p.1 + p.2 <= BADGE_SIZE - WINDOW_MARGIN);
                     for (j, q) in shapes[..i].iter().enumerate() {
+                        if q.centre {
+                            continue;
+                        }
                         if items[i].0 != items[j].0 || (s.ear && q.ear) {
                             assert!(!overlap(p, q.placement), "{n} {pattern} {i} {j}");
                         }
@@ -953,9 +1020,15 @@ mod tests {
     }
     #[test]
     fn bulbs_merge_with_the_centre_and_ears_with_their_bulb() {
-        let shapes = satellites(&[("delta", true), ("delta", false), ("cobalt", false)]);
+        let shapes = satellites(&[
+            ("atlas", true),
+            ("delta", true),
+            ("delta", false),
+            ("cobalt", false),
+        ]);
         let c = (BADGE_SIZE / 2.0, BADGE_SIZE / 2.0);
-        let (bulb, ear, lone) = (shapes[0], shapes[1], shapes[2]);
+        let (bulb, ear, lone) = (shapes[1], shapes[2], shapes[3]);
+        assert!(shapes.iter().all(|s| !s.centre));
         assert!(!bulb.ear && ear.ear && !lone.ear);
         // Each bulb overlaps the centre circle but sticks out of it.
         for s in [bulb, lone] {
@@ -968,5 +1041,39 @@ mod tests {
         let d = distance(centre(ear.placement), centre(bulb.placement));
         assert!(d < (bulb.placement.2 + ear.placement.2) / 2.0);
         assert!(distance(centre(ear.placement), c) > distance(centre(bulb.placement), c));
+    }
+    #[test]
+    fn a_single_production_sudo_is_the_centre_itself() {
+        let shapes = satellites(&[("delta", true), ("delta", false), ("cobalt", false)]);
+        let c = (BADGE_SIZE / 2.0, BADGE_SIZE / 2.0);
+        let (prod, ear, lone) = (shapes[0], shapes[1], shapes[2]);
+        assert!(prod.centre && !ear.centre && !lone.centre);
+        assert_eq!(prod.placement, center_placement());
+        // Its staging is an ear of the centre: behind it, sticking out.
+        assert!(ear.ear && !lone.ear);
+        let d = distance(centre(ear.placement), c);
+        assert!(d < (CENTER_DIAMETER + ear.placement.2) / 2.0);
+        assert!(d + ear.placement.2 / 2.0 > CENTER_DIAMETER / 2.0 + 4.0);
+        // Another project without production stays a bulb, apart from that ear.
+        assert_eq!(lone.placement.2, LONE_DIAMETER);
+        assert!(!overlap(ear.placement, lone.placement));
+    }
+    #[test]
+    fn the_centre_takes_a_sudo_only_when_it_has_nothing_to_combine() {
+        // One production sudo, whatever surrounds it.
+        assert_eq!(centre_item(&[("a", true)]), Some(0));
+        assert_eq!(
+            centre_item(&[("a", false), ("b", true), ("b", false)]),
+            Some(1)
+        );
+        // A single sudo of any environment.
+        assert_eq!(centre_item(&[("a", false)]), Some(0));
+        // Several productions, or several sudos without production: combined centre.
+        assert_eq!(centre_item(&[("a", true), ("b", true)]), None);
+        assert_eq!(centre_item(&[("a", false), ("b", false)]), None);
+        assert_eq!(centre_item(&[]), None);
+        assert!(satellites(&[]).is_empty());
+        let alone = satellites(&[("a", true)]);
+        assert!(alone.len() == 1 && alone[0].centre);
     }
 }
