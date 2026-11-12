@@ -1,0 +1,19 @@
+{
+  "updatedAt": 100000,
+  "status": "degraded",
+  "count": 3,
+  "sections": [
+    { "id": "kubernetes", "label": "Kubernetes", "status": "degraded", "count": 2 },
+    { "id": "ingestion", "label": "Ingestion", "status": "operational", "count": 0 },
+    { "id": "jobs", "label": "Jobs", "status": "degraded", "count": 1 },
+    { "id": "scheduler", "label": "Scheduler", "status": "operational", "count": 0 },
+    { "id": "billing", "label": "Billing", "status": "watch", "count": 1 },
+    { "id": "blockchains", "label": "Blockchains", "status": "operational", "count": 0 },
+    { "id": "graphql", "label": "GraphQL", "status": "operational", "count": 0 },
+    { "id": "logs", "label": "Logs", "status": "operational", "count": 0 },
+    { "id": "rabbitmq", "label": "RabbitMQ", "status": "unknown", "count": 0 },
+    { "id": "redis", "label": "Redis", "status": "operational", "count": 0 },
+    { "id": "postgresql", "label": "PostgreSQL", "status": "operational", "count": 0 },
+    { "id": "incidents", "label": "Incidents", "status": "degraded", "count": 3 }
+  ]
+}

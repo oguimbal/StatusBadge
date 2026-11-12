@@ -1,0 +1,25 @@
+[workspace]
+resolver = "2"
+members = ["crates/statusbadge-core", "crates/statusbadge-ui", "crates/statusbadge"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.89"
+publish = false
+
+[workspace.dependencies]
+statusbadge-core = { path = "crates/statusbadge-core" }
+statusbadge-ui = { path = "crates/statusbadge-ui" }
+gpui = { git = "https://github.com/zed-industries/zed", rev = "3767d69d6470f028411cfb75d25adbe5548ff9ca" }
+gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "3767d69d6470f028411cfb75d25adbe5548ff9ca", features = ["runtime_shaders", "font-kit"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+url = "2"
+anyhow = "1"
+semver = { version = "1", features = ["serde"] }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "symbols"

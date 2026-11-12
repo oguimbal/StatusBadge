@@ -1,0 +1,154 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+  # Dry run: builds, signs and notarises, uploads the DMG to the run, publishes nothing.
+  # Use it before tagging after any change to this file or to bundle/.
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  macos:
+    # Not a pinned image: GitHub retires them (macos-14 stopped being served in 2026).
+    runs-on: macos-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin, x86_64-apple-darwin
+
+      # verify-version.py needs tomllib (Python 3.11+); the system python3 is older.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - uses: Swatinem/rust-cache@v2
+
+      # Cargo.toml, Info.plist and, on a tag, the tag itself: the updater compares them.
+      - name: Verify version
+        run: |
+          if [ "$GITHUB_REF_TYPE" = tag ]; then
+              python3 bundle/verify-version.py "$GITHUB_REF_NAME"
+          else
+              python3 bundle/verify-version.py
+          fi
+
+      # The Developer ID Application certificate goes into a temporary keychain, which
+      # disappears with the runner. No fallback to an ad hoc signature: the updater and
+      # Gatekeeper refuse such a build.
+      - name: Import signing certificate
+        env:
+          CODESIGN_CERT_P12_BASE64: ${{ secrets.CODESIGN_CERT_P12_BASE64 }}
+          CODESIGN_CERT_PASSWORD: ${{ secrets.CODESIGN_CERT_PASSWORD }}
+        run: |
+          if [ -z "$CODESIGN_CERT_P12_BASE64" ]; then
+              echo "FATAL: secret CODESIGN_CERT_P12_BASE64 is not set." >&2
+              exit 1
+          fi
+          CERT_PATH="$RUNNER_TEMP/cert.p12"
+          KEYCHAIN_PATH="$RUNNER_TEMP/build.keychain-db"
+          KEYCHAIN_PASSWORD=$(openssl rand -hex 32)
+          echo -n "$CODESIGN_CERT_P12_BASE64" | base64 --decode -o "$CERT_PATH"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          # `-T /usr/bin/codesign` lets codesign use the key without a GUI prompt.
+          security import "$CERT_PATH" -P "$CODESIGN_CERT_PASSWORD" \
+              -f pkcs12 -k "$KEYCHAIN_PATH" \
+              -T /usr/bin/codesign -T /usr/bin/security
+          rm -f "$CERT_PATH"
+          # `-k` here is the keychain password, not its path: the ACL update must not
+          # trigger an interactive unlock.
+          security set-key-partition-list -S apple-tool:,apple:,codesign: \
+              -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH" >/dev/null
+          security list-keychain -d user -s "$KEYCHAIN_PATH" $(security list-keychains -d user | tr -d '"')
+
+      # The identity name is public and lives in bundle/release-config.sh.
+      - name: Verify imported identity
+        run: |
+          source bundle/release-config.sh
+          security find-identity -v -p codesigning "$RUNNER_TEMP/build.keychain-db" || true
+          if ! security find-identity -v -p codesigning | grep -Fq "\"$CODESIGN_IDENTITY\""; then
+              echo "FATAL: \"$CODESIGN_IDENTITY\" not found in the keychain search path." >&2
+              echo "Either the .p12 was exported without its private key, or it holds" >&2
+              echo "another certificate than the one named in bundle/release-config.sh." >&2
+              exit 1
+          fi
+
+      # Reach the notary service before building, so a wrong app-specific password
+      # fails now rather than after the build.
+      - name: Verify notary credentials
+        env:
+          NOTARY_APPLE_ID: ${{ secrets.NOTARY_APPLE_ID }}
+          NOTARY_TEAM_ID: ${{ secrets.NOTARY_TEAM_ID }}
+          NOTARY_PASSWORD: ${{ secrets.NOTARY_PASSWORD }}
+        run: |
+          for name in NOTARY_APPLE_ID NOTARY_TEAM_ID NOTARY_PASSWORD; do
+              if [ -z "${!name}" ]; then echo "FATAL: secret $name is not set." >&2; exit 1; fi
+          done
+          # Without pipefail, `head` would hide a refusal by Apple.
+          set -o pipefail
+          xcrun notarytool history \
+              --apple-id "$NOTARY_APPLE_ID" \
+              --team-id "$NOTARY_TEAM_ID" \
+              --password "$NOTARY_PASSWORD" \
+              | head -5
+
+      # arm64 + x86_64 in one executable, signed with the hardened runtime.
+      - name: Build and bundle .app
+        env:
+          BUNDLE_UNIVERSAL: "1"
+        run: |
+          ./bundle/bundle.sh
+          lipo -archs "dist/Status Badge.app/Contents/MacOS/statusbadge"
+
+      # Stapled, so that a copy taken out of the DMG passes Gatekeeper offline.
+      - name: Notarise .app
+        env:
+          NOTARY_APPLE_ID: ${{ secrets.NOTARY_APPLE_ID }}
+          NOTARY_TEAM_ID: ${{ secrets.NOTARY_TEAM_ID }}
+          NOTARY_PASSWORD: ${{ secrets.NOTARY_PASSWORD }}
+        run: ./bundle/notarize.sh "dist/Status Badge.app"
+
+      - name: Install create-dmg
+        run: brew install create-dmg
+
+      - name: Create DMG
+        run: ./bundle/dmg.sh
+
+      - name: Notarise DMG
+        env:
+          NOTARY_APPLE_ID: ${{ secrets.NOTARY_APPLE_ID }}
+          NOTARY_TEAM_ID: ${{ secrets.NOTARY_TEAM_ID }}
+          NOTARY_PASSWORD: ${{ secrets.NOTARY_PASSWORD }}
+        run: ./bundle/notarize.sh dist/StatusBadge.dmg
+
+      # Same assessment as crates/statusbadge/src/updater.rs runs on the downloaded
+      # file: a DMG the application would refuse is not published.
+      - name: Gatekeeper assessment
+        run: spctl --assess --type open --context context:primary-signature -v dist/StatusBadge.dmg
+
+      - name: Upload dry-run artifact
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-notarised
+          path: dist/StatusBadge.dmg
+
+      # Stable file name (no version): the updater looks for this exact name, and
+      # /releases/latest/download/StatusBadge.dmg is a permanent download link.
+      - name: Publish GitHub Release
+        if: github.event_name == 'push'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/StatusBadge.dmg
+          generate_release_notes: true
+          draft: false
+          prerelease: false

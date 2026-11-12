@@ -1,0 +1,31 @@
+[package]
+name = "statusbadge"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+statusbadge-core.workspace = true
+statusbadge-ui.workspace = true
+gpui.workspace = true
+gpui_platform.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+semver.workspace = true
+url.workspace = true
+directories = "6"
+crossbeam-channel = "0.5"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+ureq = { version = "2.12", features = ["json"] }
+rand = "0.9"
+sha2 = "0.10"
+base64 = "0.22"
+fs2 = "0.4"
+tempfile = "3"
+security-framework = "3"
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", features = ["NSApplication", "NSEvent", "NSScreen", "NSView", "NSWindow"] }
+objc2-foundation = "0.3"
+raw-window-handle = "0.6"

@@ -1,0 +1,9 @@
+[package]
+name = "statusbadge-ui"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+statusbadge-core.workspace = true
+gpui.workspace = true
